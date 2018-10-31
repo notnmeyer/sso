@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"html/template"
 	"net"
 	"net/http"
@@ -74,6 +76,10 @@ type OAuthProxy struct {
 
 	mux         map[string]*route
 	regexRoutes []*route
+
+	RequestSigningPublicKey string
+	requestSigningKey       []byte
+	requestHasher           hash.Hash
 }
 
 type route struct {
@@ -303,6 +309,8 @@ func NewOAuthProxy(opts *Options, optFuncs ...func(*OAuthProxy) error) (*OAuthPr
 		redirectURL:       &url.URL{Path: "/oauth2/callback"},
 		skipAuthPreflight: opts.SkipAuthPreflight,
 		templates:         getTemplates(),
+
+		requestHasher: sha256.New(),
 	}
 
 	for _, optFunc := range optFuncs {
@@ -327,6 +335,9 @@ func NewOAuthProxy(opts *Options, optFuncs ...func(*OAuthProxy) error) (*OAuthPr
 		}
 	}
 
+	// p.requestSigningKey = opts.RequestSigningKey
+	p.RequestSigningPublicKey = opts.RequestSigningPublicKey
+
 	return p, nil
 }
 
@@ -335,6 +346,7 @@ func (p *OAuthProxy) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/favicon.ico", p.Favicon)
 	mux.HandleFunc("/robots.txt", p.RobotsTxt)
+	mux.HandleFunc("/signingkey", p.SigningKey)
 	mux.HandleFunc("/oauth2/sign_out", p.SignOut)
 	mux.HandleFunc("/oauth2/callback", p.OAuthCallback)
 	mux.HandleFunc("/oauth2/auth", p.AuthenticateOnly)
@@ -531,6 +543,13 @@ func (p *OAuthProxy) SaveSession(rw http.ResponseWriter, req *http.Request, s *p
 func (p *OAuthProxy) RobotsTxt(rw http.ResponseWriter, _ *http.Request) {
 	rw.WriteHeader(http.StatusOK)
 	fmt.Fprintf(rw, "User-agent: *\nDisallow: /")
+}
+
+// SigningKey publishes the public key necessary for upstream services to validate the digital signature
+// used to sign each request.
+func (p *OAuthProxy) SigningKey(rw http.ResponseWriter, _ *http.Request) {
+	rw.WriteHeader(http.StatusOK)
+	fmt.Fprintf(rw, p.RequestSigningPublicKey)
 }
 
 // Favicon will proxy the request as usual if the user is already authenticated
